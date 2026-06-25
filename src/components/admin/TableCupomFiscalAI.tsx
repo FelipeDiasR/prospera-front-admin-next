@@ -122,6 +122,13 @@ export default function TableCupomFiscalAI() {
       if (result.totalAmount != null) {
         setExtractedTotalAmount(result.totalAmount);
         setTotalAmountInput(String(result.totalAmount));
+      } else if (result.items?.length > 0) {
+        // IA não retornou totalAmount — calcula a soma dos itens
+        const sum = result.items.reduce((acc: number, item: { totalItemValue?: string }) => acc + (parseFloat(item.totalItemValue || "0") || 0), 0);
+        if (sum > 0) {
+          setExtractedTotalAmount(sum);
+          setTotalAmountInput(sum.toFixed(2));
+        }
       }
       if (result.items?.length > 0) setApproveItems(result.items);
 
@@ -191,7 +198,8 @@ export default function TableCupomFiscalAI() {
     const hasInvalid = normalizedItems.some((i) => !i.description || i.quantity == null || i.unitValue == null || i.totalItemValue == null);
     if (hasInvalid) { setActionError("Preencha todos os campos de cada item."); return; }
 
-    const totalAmountReais = extractedTotalAmount ?? normalizedItems.reduce((acc, i) => acc + (i.totalItemValue ?? 0), 0);
+    const itemsSum = normalizedItems.reduce((acc, i) => acc + (i.totalItemValue ?? 0), 0);
+    const totalAmountReais = extractedTotalAmount && extractedTotalAmount > 0 ? extractedTotalAmount : itemsSum;
     const totalAmount = Math.round(totalAmountReais * 100);
     if (!Number.isFinite(totalAmount) || totalAmount <= 0) { setActionError("Total inválido."); return; }
 
