@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { extractText } from "unpdf";
 
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -401,12 +402,74 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
-    const base64 = buffer.toString("base64");
 
     let mediaType = file.type || "image/jpeg";
     if (file.name?.toLowerCase().endsWith(".pdf")) {
       mediaType = "application/pdf";
     }
+
+    // PDF: extrair texto e usar fluxo de texto (mais confiável e compatível com todos os providers)
+    if (mediaType === "application/pdf") {
+      try {
+        const { text: textPages, totalPages } = await extractText(new Uint8Array(buffer));
+        const pdfText = textPages.join("\n").trim();
+
+        if (!pdfText) {
+          return NextResponse.json(
+            { error: "PDF não contém texto selecionável. Tente enviar como imagem (print/screenshot)." },
+            { status: 400 }
+          );
+        }
+
+        console.log(`[NFC-e API] PDF com ${totalPages} página(s), ${pdfText.length} chars extraídos`);
+
+        // Usa o fluxo de extração por texto
+        if (CLAUDE_API_KEY) {
+          try {
+            const result = await extractTextWithClaude(pdfText);
+            if (result.items.length > 0) {
+              return NextResponse.json({ ...result, provider: "Claude (PDF→texto)" });
+            }
+          } catch (err) {
+            console.warn("[NFC-e API] Claude (PDF→texto) falhou:", (err as Error).message);
+          }
+        }
+
+        if (GEMINI_API_KEY) {
+          try {
+            const result = await extractTextWithGemini(pdfText);
+            if (result.items.length > 0) {
+              return NextResponse.json({ ...result, provider: "Gemini (PDF→texto)" });
+            }
+          } catch (err) {
+            console.warn("[NFC-e API] Gemini (PDF→texto) falhou:", (err as Error).message);
+          }
+        }
+
+        if (OPENAI_API_KEY) {
+          try {
+            const result = await extractTextWithOpenAI(pdfText);
+            return NextResponse.json({ ...result, provider: "OpenAI GPT (PDF→texto)" });
+          } catch (err) {
+            console.error("[NFC-e API] OpenAI GPT (PDF→texto) falhou:", (err as Error).message);
+          }
+        }
+
+        return NextResponse.json(
+          { error: "Não foi possível extrair dados do PDF." },
+          { status: 502 }
+        );
+      } catch (err) {
+        console.error("[NFC-e API] Erro ao ler PDF:", err);
+        return NextResponse.json(
+          { error: "Erro ao ler o arquivo PDF. Verifique se o arquivo não está corrompido." },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Imagem: fluxo normal com visão
+    const base64 = buffer.toString("base64");
 
     // Tenta Claude primeiro
     if (CLAUDE_API_KEY) {
