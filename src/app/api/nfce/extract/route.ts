@@ -408,28 +408,32 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       mediaType = "application/pdf";
     }
 
-    // PDF: extrair texto e usar fluxo de texto (mais confiável e compatível com todos os providers)
+    // PDF: tenta extrair texto primeiro, se falhar usa PDF nativo no Claude/Gemini
     if (mediaType === "application/pdf") {
+      const base64Pdf = buffer.toString("base64");
+
+      // 1) Tentar extrair texto do PDF
+      let pdfText = "";
       try {
         const { text: textPages, totalPages } = await extractText(new Uint8Array(buffer));
-        const pdfText = textPages.join("\n").trim();
-
-        if (!pdfText) {
-          return NextResponse.json(
-            { error: "PDF não contém texto selecionável. Tente enviar como imagem (print/screenshot)." },
-            { status: 400 }
-          );
-        }
-
+        pdfText = textPages.join("\n").trim();
         console.log(`[NFC-e API] PDF com ${totalPages} página(s), ${pdfText.length} chars extraídos`);
+        if (pdfText.length > 0) {
+          console.log(`[NFC-e API] Primeiros 500 chars do PDF:\n${pdfText.substring(0, 500)}`);
+        }
+      } catch (err) {
+        console.warn("[NFC-e API] Falha ao extrair texto do PDF com unpdf:", (err as Error).message);
+      }
 
-        // Usa o fluxo de extração por texto
+      // 2) Se extraiu texto suficiente, tenta via fluxo de texto
+      if (pdfText.length > 50) {
         if (CLAUDE_API_KEY) {
           try {
             const result = await extractTextWithClaude(pdfText);
             if (result.items.length > 0) {
               return NextResponse.json({ ...result, provider: "Claude (PDF→texto)" });
             }
+            console.log("[NFC-e API] Claude (PDF→texto) retornou 0 itens");
           } catch (err) {
             console.warn("[NFC-e API] Claude (PDF→texto) falhou:", (err as Error).message);
           }
@@ -441,6 +445,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
             if (result.items.length > 0) {
               return NextResponse.json({ ...result, provider: "Gemini (PDF→texto)" });
             }
+            console.log("[NFC-e API] Gemini (PDF→texto) retornou 0 itens");
           } catch (err) {
             console.warn("[NFC-e API] Gemini (PDF→texto) falhou:", (err as Error).message);
           }
@@ -449,23 +454,59 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         if (OPENAI_API_KEY) {
           try {
             const result = await extractTextWithOpenAI(pdfText);
-            return NextResponse.json({ ...result, provider: "OpenAI GPT (PDF→texto)" });
+            if (result.items.length > 0) {
+              return NextResponse.json({ ...result, provider: "OpenAI GPT (PDF→texto)" });
+            }
+            console.log("[NFC-e API] OpenAI (PDF→texto) retornou 0 itens");
           } catch (err) {
-            console.error("[NFC-e API] OpenAI GPT (PDF→texto) falhou:", (err as Error).message);
+            console.warn("[NFC-e API] OpenAI GPT (PDF→texto) falhou:", (err as Error).message);
           }
         }
-
-        return NextResponse.json(
-          { error: "Não foi possível extrair dados do PDF." },
-          { status: 502 }
-        );
-      } catch (err) {
-        console.error("[NFC-e API] Erro ao ler PDF:", err);
-        return NextResponse.json(
-          { error: "Erro ao ler o arquivo PDF. Verifique se o arquivo não está corrompido." },
-          { status: 400 }
-        );
       }
+
+      // 3) Fallback: envia PDF nativo ao Claude (suporta documentos PDF)
+      console.log("[NFC-e API] Fluxo texto falhou/insuficiente, tentando PDF nativo...");
+      if (CLAUDE_API_KEY) {
+        try {
+          const result = await extractWithClaude(base64Pdf, "application/pdf");
+          if (result.items.length > 0) {
+            return NextResponse.json({ ...result, provider: "Claude (PDF nativo)" });
+          }
+          console.log("[NFC-e API] Claude (PDF nativo) retornou 0 itens");
+        } catch (err) {
+          console.warn("[NFC-e API] Claude (PDF nativo) falhou:", (err as Error).message);
+        }
+      }
+
+      // 4) Fallback: envia PDF ao Gemini como inline_data
+      if (GEMINI_API_KEY) {
+        try {
+          const result = await extractWithGemini(base64Pdf, "application/pdf");
+          if (result.items.length > 0) {
+            return NextResponse.json({ ...result, provider: "Gemini (PDF nativo)" });
+          }
+          console.log("[NFC-e API] Gemini (PDF nativo) retornou 0 itens");
+        } catch (err) {
+          console.warn("[NFC-e API] Gemini (PDF nativo) falhou:", (err as Error).message);
+        }
+      }
+
+      // 5) Último fallback: OpenAI não suporta PDF nativo, mas podemos tentar com texto mesmo curto
+      if (OPENAI_API_KEY && pdfText.length > 0) {
+        try {
+          const result = await extractTextWithOpenAI(pdfText);
+          if (result.items.length > 0) {
+            return NextResponse.json({ ...result, provider: "OpenAI GPT (PDF→texto fallback)" });
+          }
+        } catch (err) {
+          console.warn("[NFC-e API] OpenAI (PDF fallback) falhou:", (err as Error).message);
+        }
+      }
+
+      return NextResponse.json(
+        { error: "Não foi possível extrair dados do PDF. Tente enviar como imagem (screenshot/foto da nota)." },
+        { status: 502 }
+      );
     }
 
     // Imagem: fluxo normal com visão

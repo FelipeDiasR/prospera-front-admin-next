@@ -3,6 +3,7 @@
 import { apiGet, apiPut } from "@/lib/api";
 import { formatDate, localMidnightToIso, toApiTime, toDateInputValue, toNumber, toTimeInputValue } from "@/lib/formatters";
 import { ApproveItem, createEmptyApproveItem, extractErrorMessage, mapItemToRow, NfceRow } from "@/lib/mappers";
+import { getParserByUf, parserRegistry } from "@/lib/parsers";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export default function TableCupomFiscal() {
@@ -22,6 +23,11 @@ export default function TableCupomFiscal() {
   // Reject modal
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReasonCode, setRejectReasonCode] = useState("");
+
+  // Paste parser
+  const [pasteText, setPasteText] = useState("");
+  const [selectedUf, setSelectedUf] = useState(parserRegistry[0]?.code ?? "");
+  const [parseError, setParseError] = useState<string | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -75,10 +81,48 @@ export default function TableCupomFiscal() {
     setApproveIssuedTime(toTimeInputValue(row.itemsJson?.issuedTime) || "");
     setApproveItems(mappedItems.length > 0 ? mappedItems : [createEmptyApproveItem()]);
     setActionError(null);
+    setPasteText("");
+    setParseError(null);
     setApproveOpen(true);
   };
 
-  const closeApproveModal = () => { setApproveOpen(false); setSelected(null); setActionError(null); };
+  const closeApproveModal = () => { setApproveOpen(false); setSelected(null); setActionError(null); setPasteText(""); setParseError(null); };
+
+  const handleUfChange = (uf: string) => {
+    setSelectedUf(uf);
+  };
+
+  const handleParse = () => {
+    setParseError(null);
+    if (!pasteText.trim()) {
+      setParseError("Cole o texto da NFC-e antes de preencher.");
+      return;
+    }
+    const parser = getParserByUf(selectedUf);
+    if (!parser) {
+      setParseError("Nenhum parser disponível para o estado selecionado.");
+      return;
+    }
+    const result = parser(pasteText);
+    if ("error" in result) {
+      setParseError(result.error);
+      return;
+    }
+    // Fill form with parsed data
+    setApproveCnpj(result.cnpj);
+    setApproveEstablishment(result.establishmentName);
+    if (result.issuedDate) setApproveIssuedDate(result.issuedDate);
+    if (result.issuedTime) setApproveIssuedTime(result.issuedTime);
+    setApproveItems(
+      result.items.map((item) => ({
+        description: item.description,
+        quantity: String(item.quantity),
+        unitValue: String(item.unitValue),
+        totalItemValue: String(item.totalItemValue),
+      }))
+    );
+    setSnackbar({ show: true, message: `${result.items.length} itens extraídos!`, type: "success" });
+  };
 
   const openRejectModal = (row: NfceRow) => {
     setSelected(row);
@@ -271,10 +315,42 @@ export default function TableCupomFiscal() {
       {/* Approve Modal */}
       {approveOpen && selected && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col p-6 gap-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col p-6 gap-4">
             <h2 className="text-lg font-bold text-gray-900">Aprovar cupom fiscal</h2>
 
             {actionError && <p className="text-sm text-red-600">{actionError}</p>}
+
+            {/* Paste Area + State Selector (fixed at top, not scrollable) */}
+            <div className="border border-dashed border-gray-300 rounded-lg p-3 space-y-2 bg-gray-50 shrink-0">
+              <div className="flex items-center gap-2">
+                <select
+                  value={selectedUf}
+                  onChange={(e) => handleUfChange(e.target.value)}
+                  className="px-2 py-1 border rounded text-sm bg-white"
+                >
+                  {parserRegistry.map((entry) => (
+                    <option key={entry.code} value={entry.code}>
+                      {entry.code} - {entry.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleParse}
+                  disabled={!pasteText.trim()}
+                  className="px-3 py-1 text-xs font-bold rounded bg-purple-100 text-purple-700 hover:bg-purple-200 disabled:opacity-40"
+                >
+                  Preencher
+                </button>
+              </div>
+              <textarea
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value.slice(0, 50000))}
+                placeholder="Cole aqui o texto da NFC-e (Ctrl+V)..."
+                className="w-full px-3 py-2 border rounded-lg text-xs font-mono min-h-[80px] resize-y bg-white"
+                rows={3}
+              />
+              {parseError && <p className="text-xs text-red-500">{parseError}</p>}
+            </div>
 
             <div className="space-y-3 overflow-y-auto flex-1">
               <input
