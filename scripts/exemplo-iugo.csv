@@ -1,0 +1,15 @@
+Data;Descrição;Tipo;Valor;Status;Cliente;Forma de Pagamento
+01/06/2025;Mensalidade Plano Premium;Crédito;R$ 299,90;Pago;Maria Silva;Cartão de Crédito
+02/06/2025;Mensalidade Plano Básico;Crédito;R$ 99,90;Pago;João Santos;Boleto
+03/06/2025;Taxa de serviço plataforma;Débito;R$ 45,00;Processado;;
+05/06/2025;Mensalidade Plano Premium;Crédito;R$ 299,90;Pago;Ana Costa;PIX
+07/06/2025;Estorno - cliente cancelou;Débito;R$ 99,90;Processado;Pedro Lima;
+10/06/2025;Mensalidade Plano Intermediário;Crédito;R$ 199,90;Pago;Carlos Ferreira;Cartão de Crédito
+12/06/2025;Taxa administrativa;Débito;R$ 25,00;Processado;;
+15/06/2025;Mensalidade Plano Premium;Crédito;R$ 299,90;Pendente;Lucia Mendes;Boleto
+18/06/2025;Mensalidade Plano Básico;Crédito;R$ 99,90;Pago;Roberto Alves;PIX
+20/06/2025;Comissão gateway;Débito;R$ 89,50;Processado;;
+22/06/2025;Mensalidade Plano Premium;Crédito;R$ 299,90;Pago;Fernanda Dias;Cartão de Crédito
+25/06/2025;Mensalidade Plano Intermediário;Crédito;R$ 199,90;Pago;Marcos Oliveira;PIX
+28/06/2025;Taxa antecipação recebíveis;Débito;R$ 150,00;Processado;;
+30/06/2025;Mensalidade Plano Básico;Crédito;R$ 99,90;Pago;Patrícia Souza;Boleto

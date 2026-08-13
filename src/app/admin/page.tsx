@@ -2,11 +2,13 @@
 
 import TableCupomFiscal from "@/components/admin/TableCupomFiscal";
 import TableCupomFiscalAI from "@/components/admin/TableCupomFiscalAI";
+import RelatorioIugo from "@/components/admin/RelatorioIugo";
 import { useState } from "react";
 
 const tabs = [
   { id: "nfce", label: "Cupom Fiscal" },
   { id: "nfce-ai", label: "Cupom Fiscal IA" },
+  { id: "relatorio-iugo", label: "Extrato Iugo" },
 ];
 
 export default function AdminDashboard() {
@@ -34,6 +36,7 @@ export default function AdminDashboard() {
       {/* Content */}
       {activeTab === "nfce" && <TableCupomFiscal />}
       {activeTab === "nfce-ai" && <TableCupomFiscalAI />}
+      {activeTab === "relatorio-iugo" && <RelatorioIugo />}
     </div>
   );
 }
