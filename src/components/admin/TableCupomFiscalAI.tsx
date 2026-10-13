@@ -1,14 +1,24 @@
 "use client";
 
-import { apiGet, apiPut } from "@/lib/api";
+import { apiPut } from "@/lib/api";
 import { formatDate, localMidnightToIso, toApiTime, toDateInputValue, toNumber, toTimeInputValue } from "@/lib/formatters";
-import { ApproveItem, createEmptyApproveItem, extractErrorMessage, mapItemToRow, NfceRow } from "@/lib/mappers";
+import { ApproveItem, createEmptyApproveItem, extractErrorMessage, NfceRow } from "@/lib/mappers";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useNfcePendingList } from "./useNfcePendingList";
+import NfcePagination from "./NfcePagination";
 
 export default function TableCupomFiscalAI() {
-  const [rows, setRows] = useState<NfceRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const {
+    rows,
+    loading,
+    loadError,
+    page,
+    totalPages,
+    totalRecords,
+    pageSize,
+    goToPage,
+    removeRowAndReload,
+  } = useNfcePendingList();
 
   // Approve modal
   const [approveOpen, setApproveOpen] = useState(false);
@@ -37,24 +47,6 @@ export default function TableCupomFiscalAI() {
 
   const approveItemsScrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const loadList = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const data = await apiGet<{ items: Record<string, unknown>[] }>(
-        "/adm/nfce/pending-human-review",
-        { page: 1, pageSize: 50 }
-      );
-      setRows((data.items ?? []).map(mapItemToRow));
-    } catch (e) {
-      setLoadError(extractErrorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { loadList(); }, [loadList]);
 
   const copyUserUuid = useCallback(async (row: NfceRow) => {
     if (!row.userUuid) return;
@@ -225,7 +217,7 @@ export default function TableCupomFiscalAI() {
     setActionError(null);
     try {
       await apiPut(`/adm/nfce/pending-human-review/${selected.id}`, payload);
-      setRows((prev) => prev.filter((r) => r.id !== selected.id));
+      removeRowAndReload(selected.id);
       closeApproveModal();
     } catch (e) {
       setActionError(extractErrorMessage(e));
@@ -243,7 +235,7 @@ export default function TableCupomFiscalAI() {
         status: "FAILED",
         rejectionReasonCode: rejectReasonCode,
       });
-      setRows((prev) => prev.filter((r) => r.id !== selected.id));
+      removeRowAndReload(selected.id);
       closeRejectModal();
     } catch (e) {
       setActionError(extractErrorMessage(e));
@@ -322,6 +314,18 @@ export default function TableCupomFiscalAI() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* Paginação */}
+      {!loading && !loadError && totalRecords > 0 && (
+        <NfcePagination
+          page={page}
+          totalPages={totalPages}
+          totalRecords={totalRecords}
+          pageSize={pageSize}
+          loading={loading}
+          onChange={goToPage}
+        />
       )}
 
       {/* Approve Modal with AI */}

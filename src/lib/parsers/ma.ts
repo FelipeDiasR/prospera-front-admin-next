@@ -144,7 +144,7 @@ export const parseMA: NfceParserFn = (rawText: string): ParsedResult | { error: 
     // Items start with a code (sequence of digits) that follows the previous item's total
     // Find the last ,\d\d boundary before this position
     const sub = section.substring(0, beforePos);
-    const lastValueEnd = sub.match(/.*,\d{2}/s);
+    const lastValueEnd = sub.match(/[\s\S]*,\d{2}/);
     if (lastValueEnd) {
       return lastValueEnd[0].length;
     }
