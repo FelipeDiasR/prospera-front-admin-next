@@ -12,8 +12,14 @@ export default function RelatorioIugo() {
 
   const handleFile = useCallback((f: File | null) => {
     if (!f) return;
-    if (!f.name.endsWith(".csv") && !f.name.endsWith(".txt")) {
-      setErrorMsg("Formato inválido. Use arquivo .csv ou .txt");
+    const nome = f.name.toLowerCase();
+    const formatoValido =
+      nome.endsWith(".csv") ||
+      nome.endsWith(".txt") ||
+      nome.endsWith(".xlsx") ||
+      nome.endsWith(".xls");
+    if (!formatoValido) {
+      setErrorMsg("Formato inválido. Use arquivo .csv, .txt, .xlsx ou .xls");
       setStatus("error");
       return;
     }
@@ -83,8 +89,8 @@ export default function RelatorioIugo() {
           Extrato Bancário - Iugo
         </h2>
         <p className="text-sm text-gray-500 mt-1">
-          Faça upload do CSV exportado da Iugo para gerar o extrato bancário em PDF
-          com os dados da conta Prospera.
+          Faça upload do arquivo exportado da Iugo (CSV, TXT ou Excel) para gerar
+          o extrato bancário em PDF com os dados da conta Prospera.
         </p>
       </div>
 
@@ -154,7 +160,7 @@ export default function RelatorioIugo() {
                 Selecionar arquivo
                 <input
                   type="file"
-                  accept=".csv,.txt"
+                  accept=".csv,.txt,.xlsx,.xls"
                   className="hidden"
                   onChange={(e) => handleFile(e.target.files?.[0] || null)}
                 />
@@ -162,7 +168,7 @@ export default function RelatorioIugo() {
               <span className="text-gray-500"> ou arraste aqui</span>
             </div>
             <p className="text-xs text-gray-400">
-              Formatos aceitos: .csv, .txt
+              Formatos aceitos: .csv, .txt, .xlsx, .xls
             </p>
           </div>
         )}
@@ -272,7 +278,7 @@ export default function RelatorioIugo() {
           <li>Exporte o extrato da Iugo e faça upload direto (mesmo sem quebras de linha)</li>
           <li>O sistema corrige automaticamente problemas de encoding</li>
           <li>O PDF gerado inclui resumo financeiro e extrato detalhado</li>
-          <li>Aceita arquivos .csv e .txt</li>
+          <li>Aceita arquivos .csv, .txt, .xlsx e .xls</li>
         </ul>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import PDFDocument from "pdfkit";
 import path from "path";
+import * as XLSX from "xlsx";
 
 // Forçar Node.js runtime (pdfkit precisa de APIs do Node)
 export const runtime = "nodejs";
@@ -44,7 +45,26 @@ interface ResumoFinanceiro {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// Corrige mojibake do tipo UTF-8 interpretado como Latin-1 (ex.: "TransferÃªncia"
+// -> "Transferência"). Reverte o processo: cada caractere volta a ser tratado
+// como byte e a sequência é redecodificada como UTF-8.
+function corrigirMojibakeUTF8(texto: string): string {
+  // Só age quando há indício do padrão (Ã ou Â seguidos de outro caractere),
+  // evitando corromper texto que já está correto.
+  if (!/[ÃÂ][\x80-\xbf\u0080-\u00ff]/.test(texto)) return texto;
+  try {
+    const bytes = Uint8Array.from(Array.from(texto, (c) => c.charCodeAt(0) & 0xff));
+    const decodificado = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    // Se a decodificação introduziu o caractere de substituição, mantém o original.
+    if (decodificado.includes("\uFFFD")) return texto;
+    return decodificado;
+  } catch {
+    return texto;
+  }
+}
+
 function corrigirEncoding(texto: string): string {
+  // 1) Corrupção estilo Mac Roman (ex.: "√™" -> "ê")
   const substituicoes: Record<string, string> = {
     "√≥": "ó", "√£": "ã", "√©": "é", "√™": "ê",
     "√≠": "í", "√°": "ð", "√¡": "á", "√∫": "ú",
@@ -55,12 +75,61 @@ function corrigirEncoding(texto: string): string {
   for (const [errado, correto] of Object.entries(substituicoes)) {
     resultado = resultado.split(errado).join(correto);
   }
+  // 2) Mojibake UTF-8 -> Latin-1 (ex.: "TransferÃªncia" -> "Transferência")
+  resultado = corrigirMojibakeUTF8(resultado);
   return resultado;
+}
+
+// Converte string com formato BR (2.936,47) ou ponto decimal (-4.25) em número.
+function parseNumeroBR(texto: string): number {
+  const limpo = texto.trim().replace(/\s/g, "");
+  if (!limpo) return 0;
+  // Se tem vírgula, assume formato BR: ponto = milhar, vírgula = decimal
+  if (limpo.includes(",")) {
+    const n = parseFloat(limpo.replace(/\./g, "").replace(",", "."));
+    return isNaN(n) ? 0 : n;
+  }
+  const n = parseFloat(limpo);
+  return isNaN(n) ? 0 : n;
+}
+
+// Normaliza data de formatos variados para AAAA-MM-DD.
+function normalizarDataCSV(texto: string): string {
+  const t = texto.trim();
+  // DD/MM/AAAA
+  const br = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (br) {
+    const [, d, m, a] = br;
+    return `${a}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+  // Já em AAAA-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);
+  return t;
+}
+
+// Detecta se o cabeçalho CSV/Excel é o formato resumido (6 colunas):
+// Data, Tipo de Movimentação, Valor, Quantidade, Movimento, Saldo
+function isFormatoResumido(headersNorm: string[]): boolean {
+  return (
+    headersNorm.includes("tipo de movimentacao") &&
+    headersNorm.includes("quantidade") &&
+    headersNorm.includes("saldo")
+  );
+}
+
+// Linhas marcadoras que não são transações reais
+function isLinhaMarker(tipoMov: string): boolean {
+  const lower = tipoMov.toLowerCase().trim();
+  return lower === "saldo inicial" || lower === "saldo final";
 }
 
 function parsearCSVIugo(conteudo: string): TransacaoIugo[] {
   let texto = corrigirEncoding(conteudo.trim());
   if (texto.charCodeAt(0) === 0xfeff) texto = texto.slice(1);
+
+  // Detectar separador: tab ou vírgula
+  const primeiraLinha = texto.split("\n")[0] || "";
+  const separador = primeiraLinha.includes("\t") ? "\t" : ",";
 
   const linhas = texto.split("\n");
   let headerLine = linhas[0];
@@ -69,51 +138,123 @@ function parsearCSVIugo(conteudo: string): TransacaoIugo[] {
   if (linhas.length > 3) {
     dataLines = linhas.slice(1).filter((l) => l.trim());
   } else {
+    // Fallback para CSVs "achatados" (poucas linhas com tudo grudado)
     const fullText = linhas.join("");
-    const headerMatch = fullText.match(/^(.+?)(?=\d{4}-\d{2}-\d{2},)/);
+    const datePattern = separador === "\t"
+      ? /(?=\d{1,2}\/\d{1,2}\/\d{4}\t)/
+      : /(?=\d{4}-\d{2}-\d{2},)/;
+    const headerMatch = fullText.match(
+      new RegExp(`^(.+?)${datePattern.source}`)
+    );
     if (headerMatch) {
       headerLine = headerMatch[1].trim();
       const restante = fullText.slice(headerMatch[0].length);
-      dataLines = restante
-        .split(/(?=\d{4}-\d{2}-\d{2},)/)
-        .filter((r) => r.trim());
+      dataLines = restante.split(datePattern).filter((r) => r.trim());
     } else {
       return [];
     }
   }
 
-  const headers = headerLine.split(",");
-  const numColunas = headers.length;
+  const headers = headerLine.split(separador);
+  const headersNorm = headers.map((h) =>
+    corrigirEncoding(h)
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim()
+  );
+
   const transacoes: TransacaoIugo[] = [];
+
+  // ─── Formato resumido (6 colunas) ───
+  if (isFormatoResumido(headersNorm)) {
+    const idx = (nomes: string[], fb: number) => {
+      for (const n of nomes) {
+        const p = headersNorm.indexOf(n);
+        if (p !== -1) return p;
+      }
+      return fb;
+    };
+    const cData = idx(["data"], 0);
+    const cTipoMov = idx(["tipo de movimentacao"], 1);
+    const cValor = idx(["valor"], 2);
+    const cQtd = idx(["quantidade"], 3);
+    const cMovimento = idx(["movimento"], 4);
+    const cSaldo = idx(["saldo"], 5);
+
+    for (const linha of dataLines) {
+      if (!linha.trim()) continue;
+      const campos = linha.split(separador);
+      if (campos.length < 4) continue;
+
+      const tipoMovimentacao = corrigirEncoding(campos[cTipoMov]?.trim() || "");
+      // Pular linhas marcadoras
+      if (isLinhaMarker(tipoMovimentacao)) continue;
+
+      const data = normalizarDataCSV(campos[cData]?.trim() || "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) continue;
+
+      const valor = parseNumeroBR(campos[cValor]?.trim() || "");
+      const saldo = parseNumeroBR(campos[cSaldo]?.trim() || "");
+      const movimento = parseNumeroBR(campos[cMovimento]?.trim() || "");
+      const quantidade = parseNumeroBR(campos[cQtd]?.trim() || "");
+
+      // No formato resumido, usamos "Tipo de Movimentação" como histórico também,
+      // pois não há coluna separada de histórico.
+      const tipo: "entrada" | "saida" = valor >= 0 ? "entrada" : "saida";
+      transacoes.push({
+        data,
+        saldoInicial: saldo - movimento, // saldo antes da transação
+        valor: Math.abs(valor),
+        saldoFinal: saldo,
+        historico: tipoMovimentacao,
+        tipoMovimentacao,
+        codigo: "",
+        referencia: quantidade > 0 ? `${quantidade}x` : "",
+        email: "",
+        nomeCliente: "",
+        tipo,
+      });
+    }
+    return transacoes;
+  }
+
+  // ─── Formato original (10 colunas) ───
+  const numColunas = headers.length;
 
   for (const linha of dataLines) {
     if (!linha.trim()) continue;
-    const campos = linha.split(",");
+    const campos = linha.split(separador);
     if (campos.length < 6) continue;
 
-    const data = campos[0]?.trim() || "";
-    const saldoInicial = parseFloat(campos[1]) || 0;
-    const valor = parseFloat(campos[2]) || 0;
-    const saldoFinal = parseFloat(campos[3]) || 0;
+    const data = normalizarDataCSV(campos[0]?.trim() || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) continue;
+
+    const saldoInicial = parseNumeroBR(campos[1]?.trim() || "");
+    const valor = parseNumeroBR(campos[2]?.trim() || "");
+    const saldoFinal = parseNumeroBR(campos[3]?.trim() || "");
 
     let historico = "", tipoMovimentacao = "", codigo = "";
     let referencia = "", email = "", nomeCliente = "";
 
     if (campos.length >= numColunas) {
-      nomeCliente = campos[campos.length - 1]?.trim() || "";
+      nomeCliente = corrigirEncoding(campos[campos.length - 1]?.trim() || "");
       email = campos[campos.length - 2]?.trim() || "";
       referencia = campos[campos.length - 3]?.trim() || "";
       codigo = campos[campos.length - 4]?.trim() || "";
-      tipoMovimentacao = campos[campos.length - 5]?.trim() || "";
-      historico = campos.slice(4, campos.length - 5).join(",").trim();
+      tipoMovimentacao = corrigirEncoding(campos[campos.length - 5]?.trim() || "");
+      historico = corrigirEncoding(campos.slice(4, campos.length - 5).join(",").trim());
     } else {
-      historico = campos[4]?.trim() || "";
-      tipoMovimentacao = campos[5]?.trim() || "";
+      historico = corrigirEncoding(campos[4]?.trim() || "");
+      tipoMovimentacao = corrigirEncoding(campos[5]?.trim() || "");
       codigo = campos[6]?.trim() || "";
       referencia = campos[7]?.trim() || "";
       email = campos[8]?.trim() || "";
-      nomeCliente = campos[9]?.trim() || "";
+      nomeCliente = corrigirEncoding(campos[9]?.trim() || "");
     }
+
+    // Pular linhas marcadoras no formato original também
+    if (isLinhaMarker(tipoMovimentacao) || isLinhaMarker(historico)) continue;
 
     const tipo: "entrada" | "saida" = valor >= 0 ? "entrada" : "saida";
     transacoes.push({
@@ -122,6 +263,188 @@ function parsearCSVIugo(conteudo: string): TransacaoIugo[] {
       email, nomeCliente, tipo,
     });
   }
+  return transacoes;
+}
+
+// ─── Parser Excel (.xlsx / .xls) ──────────────────────────────────────────────
+
+// Normaliza data para o formato AAAA-MM-DD usado pelo restante do código.
+// Aceita: Date (célula de data do Excel), "DD/MM/AAAA" (BR) ou "AAAA-MM-DD".
+function normalizarDataExcel(valor: unknown): string {
+  if (valor instanceof Date && !isNaN(valor.getTime())) {
+    const ano = valor.getFullYear();
+    const mes = String(valor.getMonth() + 1).padStart(2, "0");
+    const dia = String(valor.getDate()).padStart(2, "0");
+    return `${ano}-${mes}-${dia}`;
+  }
+  const texto = String(valor ?? "").trim();
+  if (!texto) return "";
+
+  // Formato BR: DD/MM/AAAA
+  const br = texto.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (br) {
+    const [, dia, mes, ano] = br;
+    return `${ano}-${mes.padStart(2, "0")}-${dia.padStart(2, "0")}`;
+  }
+
+  // Já está em AAAA-MM-DD (com hora opcional)
+  const iso = texto.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+
+  return texto;
+}
+
+// Converte um valor de célula (number ou string com vírgula/ponto) em número.
+function parseNumeroExcel(valor: unknown): number {
+  if (typeof valor === "number") return valor;
+  const texto = String(valor ?? "").trim();
+  if (!texto) return 0;
+  // Remove separador de milhar e usa ponto como decimal.
+  // Ex.: "1.234,56" -> "1234.56" ; "-4.25" permanece "-4.25"
+  let normalizado = texto.replace(/\s/g, "");
+  if (normalizado.includes(",")) {
+    normalizado = normalizado.replace(/\./g, "").replace(",", ".");
+  }
+  const n = parseFloat(normalizado);
+  return isNaN(n) ? 0 : n;
+}
+
+function normalizarChave(texto: unknown): string {
+  return corrigirEncoding(String(texto ?? ""))
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
+function parsearExcelIugo(buffer: ArrayBuffer): TransacaoIugo[] {
+  const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
+  const primeiraAba = workbook.SheetNames[0];
+  if (!primeiraAba) return [];
+
+  const sheet = workbook.Sheets[primeiraAba];
+  const linhas = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    header: 1,
+    blankrows: false,
+    defval: "",
+    raw: true,
+  });
+  if (linhas.length < 2) return [];
+
+  // Localiza a linha de cabeçalho procurando pelas colunas conhecidas.
+  let headerIdx = 0;
+  for (let i = 0; i < Math.min(linhas.length, 5); i++) {
+    const chaves = (linhas[i] || []).map(normalizarChave);
+    if (
+      chaves.includes("data") &&
+      (chaves.some((c) => c.startsWith("saldo")) || chaves.includes("valor"))
+    ) {
+      headerIdx = i;
+      break;
+    }
+  }
+
+  const header = (linhas[headerIdx] || []).map(normalizarChave);
+
+  // Mapeia índices por nome de coluna, com fallback para posição fixa.
+  const idx = (nomes: string[], fallback: number) => {
+    for (const nome of nomes) {
+      const pos = header.indexOf(nome);
+      if (pos !== -1) return pos;
+    }
+    return fallback;
+  };
+
+  const resumido = isFormatoResumido(header);
+  const transacoes: TransacaoIugo[] = [];
+
+  if (resumido) {
+    // ─── Formato resumido (6 colunas) ───
+    const cData = idx(["data"], 0);
+    const cTipoMov = idx(["tipo de movimentacao"], 1);
+    const cValor = idx(["valor"], 2);
+    const cQtd = idx(["quantidade"], 3);
+    const cMovimento = idx(["movimento"], 4);
+    const cSaldo = idx(["saldo"], 5);
+
+    for (let i = headerIdx + 1; i < linhas.length; i++) {
+      const linha = linhas[i] || [];
+      const tipoMovimentacao = corrigirEncoding(String(linha[cTipoMov] ?? "").trim());
+      if (isLinhaMarker(tipoMovimentacao)) continue;
+
+      const data = normalizarDataExcel(linha[cData]);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) continue;
+
+      const valor = parseNumeroExcel(linha[cValor]);
+      const saldo = parseNumeroExcel(linha[cSaldo]);
+      const movimento = parseNumeroExcel(linha[cMovimento]);
+      const quantidade = parseNumeroExcel(linha[cQtd]);
+
+      const tipo: "entrada" | "saida" = valor >= 0 ? "entrada" : "saida";
+      transacoes.push({
+        data,
+        saldoInicial: saldo - movimento,
+        valor: Math.abs(valor),
+        saldoFinal: saldo,
+        historico: tipoMovimentacao,
+        tipoMovimentacao,
+        codigo: "",
+        referencia: quantidade > 0 ? `${quantidade}x` : "",
+        email: "",
+        nomeCliente: "",
+        tipo,
+      });
+    }
+  } else {
+    // ─── Formato original (10 colunas) ───
+    const cData = idx(["data"], 0);
+    const cSaldoInicial = idx(["saldo inicial"], 1);
+    const cValor = idx(["valor"], 2);
+    const cSaldoFinal = idx(["saldo final"], 3);
+    const cHistorico = idx(["historico"], 4);
+    const cTipoMov = idx(["tipo de movimentacao", "tipo movimentacao"], 5);
+    const cCodigo = idx(["codigo"], 6);
+    const cReferencia = idx(["referencia"], 7);
+    const cEmail = idx(["e-mail", "email"], 8);
+    const cCliente = idx(["nome cliente", "nome do cliente", "cliente"], 9);
+
+    for (let i = headerIdx + 1; i < linhas.length; i++) {
+      const linha = linhas[i] || [];
+      const data = normalizarDataExcel(linha[cData]);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) continue;
+
+      const saldoInicial = parseNumeroExcel(linha[cSaldoInicial]);
+      const valor = parseNumeroExcel(linha[cValor]);
+      const saldoFinal = parseNumeroExcel(linha[cSaldoFinal]);
+
+      const historico = corrigirEncoding(String(linha[cHistorico] ?? "").trim());
+      const tipoMovimentacao = corrigirEncoding(String(linha[cTipoMov] ?? "").trim());
+
+      // Pular linhas marcadoras
+      if (isLinhaMarker(tipoMovimentacao) || isLinhaMarker(historico)) continue;
+
+      const codigo = String(linha[cCodigo] ?? "").trim();
+      const referencia = String(linha[cReferencia] ?? "").trim();
+      const email = String(linha[cEmail] ?? "").trim();
+      const nomeCliente = corrigirEncoding(String(linha[cCliente] ?? "").trim());
+
+      const tipo: "entrada" | "saida" = valor >= 0 ? "entrada" : "saida";
+      transacoes.push({
+        data,
+        saldoInicial,
+        valor: Math.abs(valor),
+        saldoFinal,
+        historico,
+        tipoMovimentacao,
+        codigo,
+        referencia,
+        email,
+        nomeCliente,
+        tipo,
+      });
+    }
+  }
+
   return transacoes;
 }
 
@@ -382,22 +705,33 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!file.name.endsWith(".csv") && !file.name.endsWith(".txt")) {
+    const nome = file.name.toLowerCase();
+    const isExcel = nome.endsWith(".xlsx") || nome.endsWith(".xls");
+    const isTexto = nome.endsWith(".csv") || nome.endsWith(".txt");
+
+    if (!isExcel && !isTexto) {
       return NextResponse.json(
-        { error: "Formato inválido. Envie um arquivo .csv ou .txt" },
+        { error: "Formato inválido. Envie um arquivo .csv, .txt, .xlsx ou .xls" },
         { status: 400 }
       );
     }
 
-    const conteudo = await file.text();
-    if (!conteudo.trim()) {
-      return NextResponse.json(
-        { error: "Arquivo está vazio" },
-        { status: 400 }
-      );
+    let transacoes: TransacaoIugo[];
+
+    if (isExcel) {
+      const buffer = await file.arrayBuffer();
+      if (buffer.byteLength === 0) {
+        return NextResponse.json({ error: "Arquivo está vazio" }, { status: 400 });
+      }
+      transacoes = parsearExcelIugo(buffer);
+    } else {
+      const conteudo = await file.text();
+      if (!conteudo.trim()) {
+        return NextResponse.json({ error: "Arquivo está vazio" }, { status: 400 });
+      }
+      transacoes = parsearCSVIugo(conteudo);
     }
 
-    const transacoes = parsearCSVIugo(conteudo);
     if (transacoes.length === 0) {
       return NextResponse.json(
         { error: "Não foi possível identificar transações. Verifique se é um extrato da Iugo." },

@@ -3,12 +3,14 @@
 import TableCupomFiscal from "@/components/admin/TableCupomFiscal";
 import TableCupomFiscalAI from "@/components/admin/TableCupomFiscalAI";
 import RelatorioIugo from "@/components/admin/RelatorioIugo";
+import ContaEnergia from "@/components/admin/ContaEnergia";
 import { useState } from "react";
 
 const tabs = [
   { id: "nfce", label: "Cupom Fiscal" },
   { id: "nfce-ai", label: "Cupom Fiscal IA" },
   { id: "relatorio-iugo", label: "Extrato Iugo" },
+  { id: "conta-energia", label: "⚡ Conta de Energia" },
 ];
 
 export default function AdminDashboard() {
@@ -37,6 +39,7 @@ export default function AdminDashboard() {
       {activeTab === "nfce" && <TableCupomFiscal />}
       {activeTab === "nfce-ai" && <TableCupomFiscalAI />}
       {activeTab === "relatorio-iugo" && <RelatorioIugo />}
+      {activeTab === "conta-energia" && <ContaEnergia />}
     </div>
   );
 }

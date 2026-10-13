@@ -48,8 +48,10 @@ async function proxyRequest(request: NextRequest, { params }: { params: Promise<
     const responseBody = await backendResponse.arrayBuffer();
     const responseHeaders = new Headers();
     backendResponse.headers.forEach((value, key) => {
-      // Skip headers that Next.js handles
-      if (!["transfer-encoding", "connection", "keep-alive"].includes(key.toLowerCase())) {
+      // Skip headers that Next.js handles or that become invalid after
+      // the server-side fetch already decoded the response body (e.g. gzip).
+      const skip = ["transfer-encoding", "connection", "keep-alive", "content-encoding", "content-length"];
+      if (!skip.includes(key.toLowerCase())) {
         responseHeaders.set(key, value);
       }
     });
