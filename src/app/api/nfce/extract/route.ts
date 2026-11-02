@@ -260,7 +260,8 @@ async function extractWithOpenAI(
     },
     body: JSON.stringify({
       model: "gpt-4o",
-      max_tokens: 4096,
+      max_tokens: 16384,
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "user",
@@ -299,7 +300,8 @@ async function extractTextWithOpenAI(
     },
     body: JSON.stringify({
       model: "gpt-4o",
-      max_tokens: 4096,
+      max_tokens: 16384,
+      response_format: { type: "json_object" },
       messages: [{ role: "user", content: fullPrompt }],
     }),
   });
